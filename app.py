@@ -1,143 +1,130 @@
-import streamlit as st
-import google.generativeai as genai
-import os
-import PyPDF2 as pdf
 from dotenv import load_dotenv
+import base64
+import streamlit as st
+import os
+import io
+from PIL import Image
+import pdf2image
+import google.generativeai as genai
 import requests
-from streamlit_chat import message  # Chatbot message bubble component
 
 # Load environment variables
 load_dotenv()
 
-# Configure the Google Gemini API
+# Configure Google Gemini API
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-
-# YouTube API Key from environment variables
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 
-# Function to get Gemini response
-def get_gemini_response(input_text):
-    model = genai.GenerativeModel('gemini-pro')
-    response = model.generate_content(input_text)
+# Function to get response from Gemini
+def get_gemini_response(input_text, pdf_content, prompt):
+    model = genai.GenerativeModel("gemini-1.5-flash")
+    response = model.generate_content([input_text, pdf_content[0], prompt])
     return response.text
 
-# Function to extract text from uploaded PDF file
-def input_pdf_text(uploaded_file):
-    reader = pdf.PdfReader(uploaded_file)
-    text = ""
-    for page in range(len(reader.pages)):
-        page = reader.pages[page]
-        text += str(page.extract_text())
-    return text
-
-# YouTube Video Search Function
-def get_youtube_videos(query):
-    search_url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&q={query}&key={YOUTUBE_API_KEY}&maxResults=5"
-    response = requests.get(search_url)
-    videos = response.json().get('items', [])
-    video_results = []
-
-    for video in videos:
-        video_title = video['snippet']['title']
-        video_id = video['id']['videoId']
-        video_url = f"https://www.youtube.com/watch?v={video_id}"
-        video_results.append((video_title, video_url))
-    
-    return video_results
-
-# Streamlit Chatbot Interface
-st.title("Smart ATS Chatbot")
-
-# Set a technical robot background image
-st.markdown(
-    """
-    <style>
-    .background {
-        background-image: url('https://example.com/path/to/your/robot-background.jpg');
-        background-size: cover;
-        background-position: center;
-        height: 100vh;
-        padding: 20px;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
-# Initialize session state to store messages
-if "messages" not in st.session_state:
-    st.session_state["messages"] = []
-
-# Input widget for chat-like interface using text_area for larger input
-user_input = st.text_area("Type your message here...", key="user_input", height=150)
-
-# Function to handle the chat input
-def handle_user_input(user_input):
-    if user_input.lower() == "stop":
-        st.session_state.messages.append({"role": "bot", "text": "Chatbot: Goodbye! If you need me again, just type your message."})
-        st.stop()  # Stop the chat session
-    elif user_input:
-        st.session_state.messages.append({"role": "user", "text": user_input})
-        return user_input
-    return None
-
-# Handle file upload
-uploaded_file = st.file_uploader("Upload Your Resume (PDF)", type="pdf", key="file")
-
-# Function to simulate bot response
-def generate_response(jd, resume_text=None):
-    if resume_text:
-        input_prompt = f"""
-        Act as an experienced ATS (Application Tracking System).
-        You are given a resume and a job description.
-        
-        Your task is to:
-        1. Calculate the percentage match between the resume and the job description.
-        2. Identify any missing keywords from the resume that are present in the job description.
-        3. Provide a profile summary.
-
-        Resume: {resume_text}
-        Job Description: {jd}
-
-        Respond in this structure:
-        {{"JD Match": "%", "MissingKeywords": [], "Profile Summary": ""}}
-        """
-        bot_response = get_gemini_response(input_prompt)
-    else:
-        input_prompt = f"Answer this query: {jd}"
-        bot_response = get_gemini_response(input_prompt)
-    
-    video_suggestions = get_youtube_videos(jd)
-    video_links = "\n".join([f"- [{video_title}]({video_url})" for video_title, video_url in video_suggestions])
-
-    # Combine bot response with video suggestions
-    final_response = f"{bot_response}\n\nYouTube Video Suggestions:\n{video_links}"
-    st.session_state.messages.append({"role": "bot", "text": final_response})
-
-# Handle user input
-if user_input:
-    jd_input = handle_user_input(user_input)
+# Function to process uploaded PDF
+def input_pdf_setup(uploaded_file):
     if uploaded_file is not None:
-        resume_text = input_pdf_text(uploaded_file)
-        generate_response(jd_input, resume_text)
+        images = pdf2image.convert_from_bytes(uploaded_file.read())
+        first_page = images[0]
+        img_byte_arr = io.BytesIO()
+        first_page.save(img_byte_arr, format='JPEG')
+        img_byte_arr = img_byte_arr.getvalue()
+
+        pdf_parts = [
+            {
+                "mime_type": "image/jpeg",
+                "data": base64.b64encode(img_byte_arr).decode()
+            }
+        ]
+        return pdf_parts
     else:
-        generate_response(jd_input)
+        raise FileNotFoundError("No file uploaded")
 
-# Automatically scroll to the latest message
-if st.session_state.messages:
-    for i, message_data in enumerate(st.session_state["messages"]):
-        role = message_data["role"]
-        text = message_data["text"]
-        
-        if role == "user":
-            message(text, is_user=True, key=f"user_{i}")  # Unique key for user messages
-        else:
-            message(text, key=f"bot_{i}")  # Unique key for bot messages
+# Function to fetch YouTube video suggestions
+def get_youtube_videos(query, max_results=3):
+    url = f"https://www.googleapis.com/youtube/v3/search?part=snippet&q={query}&key={YOUTUBE_API_KEY}&maxResults={max_results}&type=video"
+    response = requests.get(url)
+    if response.status_code == 200:
+        results = response.json().get("items", [])
+        videos = []
+        for item in results:
+            video_id = item["id"]["videoId"]
+            title = item["snippet"]["title"]
+            thumbnail = item["snippet"]["thumbnails"]["medium"]["url"]
+            video_url = f"https://www.youtube.com/watch?v={video_id}"
+            videos.append({"title": title, "thumbnail": thumbnail, "url": video_url})
+        return videos
+    else:
+        return []
 
-# Add a button to send the message
-if st.button("Send", key="send-button"):
-    if user_input:
-        st.session_state["user_input"] = user_input  # This line sets the user input correctly
-        st.session_state["messages"].append({"role": "user", "text": user_input})
-        # Reset the input field
-        st.session_state["user_input"] = ""
+# ------------------ Streamlit App ------------------
+
+st.set_page_config(page_title="ATS Resume Expert")
+st.header("ATS Tracking System")
+
+# Job description input
+input_text = st.text_area("Job Description: ", key="input")
+
+# Resume upload
+uploaded_file = st.file_uploader("Upload your resume (PDF)...", type=["pdf"])
+
+if uploaded_file is not None:
+    st.success("✅ PDF Uploaded Successfully")
+
+# Buttons
+submit1 = st.button("Tell Me About the Resume")
+submit3 = st.button("Percentage Match")
+
+# Prompts
+input_prompt1 = """
+You are an experienced Technical Human Resource Manager. 
+Your task is to review the provided resume against the job description. 
+Please share your professional evaluation on whether the candidate's profile aligns with the role. 
+Highlight the strengths and weaknesses of the applicant in relation to the specified job requirements.
+"""
+
+input_prompt3 = """
+You are a skilled ATS (Applicant Tracking System) scanner with a deep understanding of data science and ATS functionality. 
+Your task is to evaluate the resume against the provided job description. 
+Give me the percentage of match if the resume matches the job description. 
+First, the output should come as a percentage, then list keywords missing, and finally provide final thoughts.
+"""
+
+# Handle button clicks
+if submit1:
+    if uploaded_file is not None:
+        pdf_content = input_pdf_setup(uploaded_file)
+        response = get_gemini_response(input_prompt1, pdf_content, input_text)
+        st.subheader("The Response is:")
+        st.write(response)
+
+        # Show YouTube video suggestions
+        st.subheader("🎥 Recommended YouTube Resources")
+        videos = get_youtube_videos("how to improve resume for ATS")
+        for v in videos:
+            st.markdown(f"**{v['title']}**")
+            st.image(v["thumbnail"], use_column_width=True)
+            st.markdown(f"[▶ Watch on YouTube]({v['url']})")
+            st.write("---")
+
+    else:
+        st.warning("⚠️ Please upload the resume first")
+
+elif submit3:
+    if uploaded_file is not None:
+        pdf_content = input_pdf_setup(uploaded_file)
+        response = get_gemini_response(input_prompt3, pdf_content, input_text)
+        st.subheader("The Response is:")
+        st.write(response)
+
+        # Show YouTube video suggestions
+        st.subheader("🎥 Recommended YouTube Resources")
+        videos = get_youtube_videos("ATS resume optimization tips")
+        for v in videos:
+            st.markdown(f"**{v['title']}**")
+            st.image(v["thumbnail"], use_column_width=True)
+            st.markdown(f"[▶ Watch on YouTube]({v['url']})")
+            st.write("---")
+
+    else:
+        st.warning("⚠️ Please upload the resume first")
