@@ -4,7 +4,4 @@ python-dotenv
 pdf2image
 
 
-for run in new pc 
-step-1: pip3 install pdf2image
-step-2: brew install poppler
 
